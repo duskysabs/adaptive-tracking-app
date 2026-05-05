@@ -1,0 +1,341 @@
+-- =========================================================
+-- EXTENSIONS
+-- =========================================================
+
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+
+-- =========================================================
+-- ENUMS
+-- =========================================================
+
+CREATE TYPE goal_rate_enum AS ENUM (
+    'aggressive_cut',
+    'moderate_cut',
+    'slow_cut',
+    'maintain',
+    'lean_bulk',
+    'bulk'
+);
+
+CREATE TYPE units_preference_enum AS ENUM (
+    'metric',
+    'imperial'
+);
+
+CREATE TYPE activity_level_enum AS ENUM (
+    'sedentary',
+    'light',
+    'moderate',
+    'active',
+    'very_active'
+);
+
+CREATE TYPE workout_type_enum AS ENUM (
+    'strength',
+    'cardio',
+    'sports',
+    'conditioning',
+    'walking',
+    'running',
+    'cycling',
+    'stairmaster',
+    'other'
+);
+
+CREATE TYPE workout_intensity_enum AS ENUM (
+    'low',
+    'moderate',
+    'high'
+);
+
+CREATE TYPE source_enum AS ENUM (
+    'manual',
+    'apple_health',
+    'google_fit',
+    'fitbit',
+    'garmin',
+    'other'
+);
+
+-- =========================================================
+-- USER PROFILE
+-- =========================================================
+
+CREATE TABLE user_profiles (
+    user_id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+
+    height NUMERIC(5,2) NOT NULL,
+    starting_weight NUMERIC(5,2) NOT NULL,
+    target_weight NUMERIC(5,2),
+
+    activity_level activity_level_enum NOT NULL DEFAULT 'moderate',
+    units_preference units_preference_enum NOT NULL DEFAULT 'metric',
+
+    sex VARCHAR(20) NOT NULL,
+    birthdate DATE NOT NULL,
+
+    goal_rate goal_rate_enum NOT NULL DEFAULT 'maintain',
+
+    timezone VARCHAR(100) DEFAULT 'UTC',
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- =========================================================
+-- WEIGHT LOGS
+-- =========================================================
+
+CREATE TABLE weight_logs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+    user_id UUID NOT NULL REFERENCES user_profiles(user_id) ON DELETE CASCADE,
+
+    weight NUMERIC(5,2) NOT NULL,
+
+    date DATE NOT NULL,
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT unique_weight_log_per_day
+        UNIQUE(user_id, date)
+);
+
+CREATE INDEX idx_weight_logs_user_date
+ON weight_logs(user_id, date);
+
+-- =========================================================
+-- ACTIVITY LOGS
+-- =========================================================
+
+CREATE TABLE activity_logs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+    user_id UUID NOT NULL REFERENCES user_profiles(user_id) ON DELETE CASCADE,
+
+    steps INTEGER NOT NULL DEFAULT 0,
+    activity_score NUMERIC(6,2),
+
+    source source_enum NOT NULL DEFAULT 'manual',
+
+    date DATE NOT NULL,
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT unique_activity_log_per_day
+        UNIQUE(user_id, date)
+);
+
+CREATE INDEX idx_activity_logs_user_date
+ON activity_logs(user_id, date);
+
+-- =========================================================
+-- WORKOUTS
+-- =========================================================
+
+CREATE TABLE workouts (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+    user_id UUID NOT NULL REFERENCES user_profiles(user_id) ON DELETE CASCADE,
+
+    type workout_type_enum NOT NULL,
+
+    duration_minutes INTEGER NOT NULL,
+    intensity workout_intensity_enum NOT NULL,
+
+    calories_estimate NUMERIC(6,2),
+
+    source source_enum NOT NULL DEFAULT 'manual',
+
+    started_at TIMESTAMPTZ NOT NULL,
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_workouts_user_started
+ON workouts(user_id, started_at);
+
+-- =========================================================
+-- TDEE ESTIMATES
+-- =========================================================
+
+CREATE TABLE tdee_estimates (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+    user_id UUID NOT NULL REFERENCES user_profiles(user_id) ON DELETE CASCADE,
+
+    estimated_tdee NUMERIC(7,2) NOT NULL,
+
+    confidence_score NUMERIC(3,2) NOT NULL
+        CHECK (confidence_score >= 0 AND confidence_score <= 1),
+
+    date DATE NOT NULL,
+
+    algorithm_version VARCHAR(20) NOT NULL DEFAULT 'v1.0',
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT unique_tdee_estimate_per_day
+        UNIQUE(user_id, date)
+);
+
+CREATE INDEX idx_tdee_estimates_user_date
+ON tdee_estimates(user_id, date);
+
+-- =========================================================
+-- TREND WEIGHTS
+-- =========================================================
+
+CREATE TABLE trend_weights (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+    user_id UUID NOT NULL REFERENCES user_profiles(user_id) ON DELETE CASCADE,
+
+    raw_weight NUMERIC(5,2) NOT NULL,
+    trend_weight NUMERIC(5,2) NOT NULL,
+
+    date DATE NOT NULL,
+
+    algorithm_version VARCHAR(20) NOT NULL DEFAULT 'v1.0',
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT unique_trend_weight_per_day
+        UNIQUE(user_id, date)
+);
+
+CREATE INDEX idx_trend_weights_user_date
+ON trend_weights(user_id, date);
+
+-- =========================================================
+-- RECOMMENDATIONS
+-- =========================================================
+
+CREATE TABLE recommendations (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+    user_id UUID NOT NULL REFERENCES user_profiles(user_id) ON DELETE CASCADE,
+
+    recommended_calories INTEGER NOT NULL,
+
+    protein_target NUMERIC(6,2),
+    carb_target NUMERIC(6,2),
+    fat_target NUMERIC(6,2),
+
+    goal_rate goal_rate_enum NOT NULL,
+
+    recommended_steps INTEGER,
+    recommended_cardio_minutes INTEGER,
+
+    date DATE NOT NULL,
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT unique_recommendation_per_day
+        UNIQUE(user_id, date)
+);
+
+CREATE INDEX idx_recommendations_user_date
+ON recommendations(user_id, date);
+
+-- =========================================================
+-- DAILY METRICS
+-- =========================================================
+
+CREATE TABLE daily_metrics (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+    user_id UUID NOT NULL REFERENCES user_profiles(user_id) ON DELETE CASCADE,
+
+    date DATE NOT NULL,
+
+    raw_weight NUMERIC(5,2),
+    trend_weight NUMERIC(5,2),
+
+    steps INTEGER DEFAULT 0,
+
+    workout_count INTEGER DEFAULT 0,
+    total_workout_duration INTEGER DEFAULT 0,
+
+    estimated_tdee NUMERIC(7,2),
+
+    confidence_score NUMERIC(3,2)
+        CHECK (confidence_score >= 0 AND confidence_score <= 1),
+
+    recommended_calories INTEGER,
+
+    weight_change_rate NUMERIC(5,2),
+
+    algorithm_version VARCHAR(20) NOT NULL DEFAULT 'v1.0',
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT unique_daily_metrics_per_day
+        UNIQUE(user_id, date)
+);
+
+CREATE INDEX idx_daily_metrics_user_date
+ON daily_metrics(user_id, date);
+
+-- =========================================================
+-- UPDATED_AT AUTO TRIGGER
+-- =========================================================
+
+CREATE OR REPLACE FUNCTION update_updated_at_column()
+RETURNS TRIGGER AS $$
+BEGIN
+   NEW.updated_at = NOW();
+   RETURN NEW;
+END;
+$$ language 'plpgsql';
+
+-- =========================================================
+-- TRIGGERS
+-- =========================================================
+
+CREATE TRIGGER trg_user_profiles_updated_at
+BEFORE UPDATE ON user_profiles
+FOR EACH ROW
+EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER trg_weight_logs_updated_at
+BEFORE UPDATE ON weight_logs
+FOR EACH ROW
+EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER trg_activity_logs_updated_at
+BEFORE UPDATE ON activity_logs
+FOR EACH ROW
+EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER trg_workouts_updated_at
+BEFORE UPDATE ON workouts
+FOR EACH ROW
+EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER trg_tdee_estimates_updated_at
+BEFORE UPDATE ON tdee_estimates
+FOR EACH ROW
+EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER trg_trend_weights_updated_at
+BEFORE UPDATE ON trend_weights
+FOR EACH ROW
+EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER trg_recommendations_updated_at
+BEFORE UPDATE ON recommendations
+FOR EACH ROW
+EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER trg_daily_metrics_updated_at
+BEFORE UPDATE ON daily_metrics
+FOR EACH ROW
+EXECUTE FUNCTION update_updated_at_column();
